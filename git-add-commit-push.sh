@@ -12,8 +12,8 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
-# Check if there are any changes to commit
-if git diff --quiet && git diff --cached --quiet; then
+# Check if there are any changes to commit (including untracked files)
+if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
     echo "No changes to commit"
     exit 0
 fi
