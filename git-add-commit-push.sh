@@ -47,6 +47,9 @@ fi
 TEMP_MSG=$(mktemp)
 trap "rm -f $TEMP_MSG" EXIT
 
+# Flag to track if user entered message manually
+MANUAL_ENTRY=false
+
 # Prompt Gemini to generate commit message
 echo "Requesting commit message from Gemini CLI..."
 echo "Note: Gemini may ask to check the DIFF - please approve when prompted"
@@ -58,53 +61,76 @@ echo
 if ! echo "$DIFF" | timeout 30 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG"; then
     echo "Error: Failed to get response from Gemini (timeout or error)"
     echo "Please check your internet connection and Gemini CLI setup"
-    exit 1
+    echo
+
+    # NEW: Ask if user wants to write their own commit message
+    read -r -p "Would you like to write the commit message yourself? [Y/n]: " manual_confirm
+    if [[ $manual_confirm =~ ^[Nn]$ ]]; then
+        echo "Commit cancelled"
+        exit 1
+    fi
+    
+    # NEW: Let user write their own commit message
+    echo "Enter your commit message (press Ctrl+D when done, or Ctrl+C to cancel):"
+    cat > "$TEMP_MSG"
+    
+    # NEW: Check if user provided a message
+    if [ ! -s "$TEMP_MSG" ]; then
+        echo "No commit message provided. Commit cancelled."
+        exit 1
+    fi
+    
+    # NEW: Set flag to skip review step
+    MANUAL_ENTRY=true
 fi
 
-echo
-echo "✓ Gemini generated the following commit message:"
-echo "─────────────────────────────────────────────────"
-# Check if file is empty or just whitespace
-if [ -s "$TEMP_MSG" ]; then
-    cat "$TEMP_MSG"
-else
-    echo "[Gemini returned an empty message]"
-fi
-echo "─────────────────────────────────────────────────"
-echo
-
-# Allow user to edit the commit message
-# Use 'read -r' to handle backslashes properly
-read -r -p "Do you want to (a)pprove, (e)dit, or (c)ancel? [a/e/c]: " choice
-
-case $choice in
-    e|E)
-        # Open the message in the user's preferred editor
-        ${EDITOR:-nano} "$TEMP_MSG"
-        echo
-        echo "Updated commit message:"
-        echo "─────────────────────────────────────────────────"
+# Only show the review menu if Gemini generated the message
+if [ "$MANUAL_ENTRY" = false ]; then
+    echo
+    echo "✓ Gemini generated the following commit message:"
+    echo "─────────────────────────────────────────────────"
+    # Check if file is empty or just whitespace
+    if [ -s "$TEMP_MSG" ]; then
         cat "$TEMP_MSG"
-        echo "─────────────────────────────────────────────────"
-        echo
-        read -r -p "Proceed with this message? [y/N]: " confirm
-        if [[ ! $confirm =~ ^[Yy]$ ]]; then
+    else
+        echo "[Gemini returned an empty message]"
+    fi
+    echo "─────────────────────────────────────────────────"
+    echo
+
+    # Allow user to edit the commit message
+    # Use 'read -r' to handle backslashes properly
+    read -r -p "Do you want to (a)pprove, (e)dit, or (c)ancel? [a/e/c]: " choice
+
+    case $choice in
+        e|E)
+            # Open the message in the user's preferred editor
+            ${EDITOR:-nano} "$TEMP_MSG"
+            echo
+            echo "Updated commit message:"
+            echo "─────────────────────────────────────────────────"
+            cat "$TEMP_MSG"
+            echo "─────────────────────────────────────────────────"
+            echo
+            read -r -p "Proceed with this message? [y/N]: " confirm
+            if [[ ! $confirm =~ ^[Yy]$ ]]; then
+                echo "Commit cancelled"
+                exit 0
+            fi
+            ;;
+        c|C)
             echo "Commit cancelled"
             exit 0
-        fi
-        ;;
-    c|C)
-        echo "Commit cancelled"
-        exit 0
-        ;;
-    a|A)
-        echo "Proceeding with commit..."
-        ;;
-    *)
-        echo "Invalid choice. Commit cancelled"
-        exit 1
-        ;;
-esac
+            ;;
+        a|A)
+            echo "Proceeding with commit..."
+            ;;
+        *)
+            echo "Invalid choice. Commit cancelled"
+            exit 1
+            ;;
+    esac
+fi
 
 # Read the commit message from the file
 COMMIT_MSG=$(cat "$TEMP_MSG")
