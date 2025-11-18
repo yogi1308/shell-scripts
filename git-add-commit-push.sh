@@ -43,9 +43,10 @@ if [ -z "$DIFF" ]; then
     exit 0
 fi
 
-# Create a temporary file for the commit message
+# Create temporary files
 TEMP_MSG=$(mktemp)
-trap "rm -f $TEMP_MSG" EXIT
+GEMINI_ERROR=$(mktemp)
+trap "rm -f $TEMP_MSG $GEMINI_ERROR" EXIT
 
 # Flag to track if user entered message manually
 MANUAL_ENTRY=false
@@ -57,30 +58,150 @@ echo
 
 # Ask Gemini to generate a commit message with timeout
 # We pipe the diff to Gemini as standard input, which is safer.
-# We also allow stderr to pass through for better debugging.
-if ! echo "$DIFF" | timeout 30 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG"; then
-    echo "Error: Failed to get response from Gemini (timeout or error)"
-    echo "Please check your internet connection and Gemini CLI setup"
+if ! echo "$DIFF" | timeout 30 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG" 2>"$GEMINI_ERROR"; then
+    GEMINI_EXIT_CODE=$?
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ Failed to get commit message from Gemini"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo
-
-    # NEW: Ask if user wants to write their own commit message
+    
+    # Analyze the error and provide specific guidance
+    if [ $GEMINI_EXIT_CODE -eq 124 ]; then
+        echo "⏱️  TIMEOUT: Gemini didn't respond within 30 seconds"
+        echo
+        echo "📝 What this means:"
+        echo "   The diff you're trying to commit might be too large, or the"
+        echo "   Gemini API is responding slowly right now."
+        echo
+        echo "💡 What you can do:"
+        echo "   1. Split your changes into smaller commits:"
+        echo "      → Stage specific files: git add file1.txt file2.txt"
+        echo "      → Then run this script again"
+        echo
+        echo "   2. Check your internet speed:"
+        echo "      → Run: curl -o /dev/null http://speedtest.wdc01.softlayer.com/downloads/test10.zip"
+        echo
+        echo "   3. Try again in a few moments (API might be busy)"
+        echo
+        DIFF_SIZE=$(echo "$DIFF" | wc -l)
+        DIFF_CHARS=$(echo "$DIFF" | wc -c)
+        echo "   📊 Your diff stats: $DIFF_SIZE lines, $DIFF_CHARS characters"
+        if [ "$DIFF_SIZE" -gt 500 ]; then
+            echo "   ⚠️  Your diff is quite large (>500 lines). Consider smaller commits."
+        fi
+        
+    elif grep -qi "api.key\|authentication\|unauthorized\|forbidden" "$GEMINI_ERROR" 2>/dev/null; then
+        echo "🔑 API KEY ISSUE: Gemini can't authenticate"
+        echo
+        echo "📝 What this means:"
+        echo "   Your Gemini API key is either missing, invalid, or expired."
+        echo
+        echo "💡 How to fix this:"
+        echo "   1. Get a FREE API key from Google:"
+        echo "      🔗 https://aistudio.google.com/app/apikey"
+        echo
+        echo "   2. Set up your API key:"
+        echo "      → Run: gemini config set api_key YOUR_API_KEY_HERE"
+        echo
+        echo "   3. Verify it works:"
+        echo "      → Test: gemini 'Hello, are you working?'"
+        echo
+        echo "   💰 Note: Gemini API has a generous free tier!"
+        
+    elif grep -qi "quota\|rate.limit\|too.many.requests" "$GEMINI_ERROR" 2>/dev/null; then
+        echo "📊 RATE LIMIT: You've hit your API usage limit"
+        echo
+        echo "📝 What this means:"
+        echo "   You've made too many requests to Gemini in a short time,"
+        echo "   or you've exceeded your daily/monthly quota."
+        echo
+        echo "💡 What you can do:"
+        echo "   1. Wait a few minutes and try again"
+        echo "      → Free tier resets after brief cooldown"
+        echo
+        echo "   2. Check your quota usage:"
+        echo "      🔗 https://aistudio.google.com/app/apikey"
+        echo
+        echo "   3. For now, write your own commit message (option below)"
+        
+    elif grep -qi "network\|connection\|ENOTFOUND\|ECONNREFUSED\|timeout" "$GEMINI_ERROR" 2>/dev/null; then
+        echo "🌐 NETWORK ERROR: Can't reach Gemini servers"
+        echo
+        echo "📝 What this means:"
+        echo "   Your computer can't connect to the Gemini API servers."
+        echo
+        echo "💡 Troubleshooting steps:"
+        echo "   1. Check your internet connection:"
+        echo "      → Run: ping -c 3 google.com"
+        echo
+        echo "   2. Check if you're behind a firewall/proxy:"
+        echo "      → Corporate networks often block API calls"
+        echo "      → Try: curl -I https://generativelanguage.googleapis.com"
+        echo
+        echo "   3. Verify DNS is working:"
+        echo "      → Run: nslookup generativelanguage.googleapis.com"
+        echo
+        echo "   4. If on VPN, try disconnecting/reconnecting"
+        
+    elif ! command -v gemini &> /dev/null; then
+        echo "❓ GEMINI NOT FOUND: Gemini CLI is not installed"
+        echo
+        echo "📝 What this means:"
+        echo "   The 'gemini' command is not available on your system."
+        echo
+        echo "💡 How to install Gemini CLI:"
+        echo "   Visit the official documentation:"
+        echo "   🔗 https://github.com/google/generative-ai-cli"
+        echo
+        echo "   Or follow Google's installation guide:"
+        echo "   🔗 https://ai.google.dev/gemini-api/docs/cli"
+        
+    else
+        echo "❌ UNKNOWN ERROR: Something unexpected happened"
+        echo
+        if [ -s "$GEMINI_ERROR" ]; then
+            echo "📋 Error details from Gemini:"
+            echo "   ┌─────────────────────────────────────────"
+            head -10 "$GEMINI_ERROR" | sed 's/^/   │ /'
+            echo "   └─────────────────────────────────────────"
+            echo
+        fi
+        echo "💡 Troubleshooting steps:"
+        echo "   1. Verify Gemini CLI is working:"
+        echo "      → Run: gemini --version"
+        echo
+        echo "   2. Test with a simple prompt:"
+        echo "      → Run: gemini 'Say hello'"
+        echo
+        echo "   3. Check for updates:"
+        echo "      → Your Gemini CLI might be outdated"
+        echo
+        echo "   4. Check system resources:"
+        echo "      → Run: free -h (check available memory)"
+        echo
+        echo "   5. Review Gemini logs (if available)"
+    fi
+    
+    echo
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Ask if user wants to write their own commit message
     read -r -p "Would you like to write the commit message yourself? [Y/n]: " manual_confirm
     if [[ $manual_confirm =~ ^[Nn]$ ]]; then
         echo "Commit cancelled"
         exit 1
     fi
     
-    # NEW: Let user write their own commit message
+    # Let user write their own commit message
     echo "Enter your commit message (press Ctrl+D when done, or Ctrl+C to cancel):"
     cat > "$TEMP_MSG"
     
-    # NEW: Check if user provided a message
+    # Check if user provided a message
     if [ ! -s "$TEMP_MSG" ]; then
         echo "No commit message provided. Commit cancelled."
         exit 1
     fi
     
-    # NEW: Set flag to skip review step
+    # Set flag to skip review step since user just wrote it
     MANUAL_ENTRY=true
 fi
 
