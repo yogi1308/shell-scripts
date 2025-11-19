@@ -43,20 +43,20 @@ if [ -z "$DIFF" ]; then
     exit 0
 fi
 
-# Create a temporary file for the commit message
+# Create temporary files
 TEMP_MSG=$(mktemp)
-trap "rm -f $TEMP_MSG" EXIT
+GEMINI_ERROR=$(mktemp)
+trap "rm -f $TEMP_MSG $GEMINI_ERROR" EXIT
+
+# Flag to track if user entered message manually
+MANUAL_ENTRY=false
 
 # Prompt Gemini to generate commit message
 echo "Requesting commit message from Gemini CLI..."
 echo
 
-# Ask Gemini to generate a commit message with timeout
+# Ask Gemini to generate a commit message with timeout (60 seconds)
 # We pipe the diff to Gemini as standard input, which is safer.
-# We also allow stderr to pass through for better debugging.
-GEMINI_ERROR=$(mktemp)
-trap "rm -f $TEMP_MSG $GEMINI_ERROR" EXIT
-
 if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG" 2>"$GEMINI_ERROR"; then
     GEMINI_EXIT_CODE=$?
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -66,7 +66,7 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
     
     # Analyze the error and provide specific guidance
     if [ $GEMINI_EXIT_CODE -eq 124 ]; then
-        echo "⏱️  TIMEOUT: Gemini didn't respond within 30 seconds"
+        echo "⏱️  TIMEOUT: Gemini didn't respond within 60 seconds"
         echo
         echo "📝 What this means:"
         echo "   The diff you're trying to commit might be too large, or the"
@@ -85,7 +85,7 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
         DIFF_SIZE=$(echo "$DIFF" | wc -l)
         DIFF_CHARS=$(echo "$DIFF" | wc -c)
         echo "   📊 Your diff stats: $DIFF_SIZE lines, $DIFF_CHARS characters"
-        if [ $DIFF_SIZE -gt 500 ]; then
+        if [ "$DIFF_SIZE" -gt 500 ]; then
             echo "   ⚠️  Your diff is quite large (>500 lines). Consider smaller commits."
         fi
         
@@ -161,7 +161,7 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
         if [ -s "$GEMINI_ERROR" ]; then
             echo "📋 Error details from Gemini:"
             echo "   ┌─────────────────────────────────────────"
-            cat "$GEMINI_ERROR" | head -10 | sed 's/^/   │ /'
+            head -10 "$GEMINI_ERROR" | sed 's/^/   │ /'
             echo "   └─────────────────────────────────────────"
             echo
         fi
@@ -183,68 +183,173 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
     
     echo
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    # NEW: Ask if user wants to write their own commit message
+    
+    # Ask if user wants to write their own commit message
     read -r -p "Would you like to write the commit message yourself? [Y/n]: " manual_confirm
     if [[ $manual_confirm =~ ^[Nn]$ ]]; then
         echo "Commit cancelled"
         exit 1
     fi
     
-    # NEW: Let user write their own commit message
+    # Let user write their own commit message
     echo "Enter your commit message (press Ctrl+D when done, or Ctrl+C to cancel):"
     cat > "$TEMP_MSG"
     
-    # NEW: Check if user provided a message
+    # Check if user provided a message
     if [ ! -s "$TEMP_MSG" ]; then
         echo "No commit message provided. Commit cancelled."
         exit 1
     fi
-fi
-
-echo
-echo "✓ Gemini generated the following commit message:"
-echo "─────────────────────────────────────────────────"
-# Check if file is empty or just whitespace
-if [ -s "$TEMP_MSG" ]; then
+    
+    # Show the user what they entered
+    echo
+    echo "Your commit message:"
+    echo "─────────────────────────────────────────────────"
     cat "$TEMP_MSG"
-else
-    echo "[Gemini returned an empty message]"
+    echo "─────────────────────────────────────────────────"
+    echo
+    
+    # Set flag to skip review step since user just wrote it
+    MANUAL_ENTRY=true
 fi
-echo "─────────────────────────────────────────────────"
-echo
 
-# Allow user to edit the commit message
-# Use 'read -r' to handle backslashes properly
-read -r -p "Do you want to (a)pprove, (e)dit, or (c)ancel? [a/e/c]: " choice
-
-case $choice in
-    e|E)
-        # Open the message in the user's preferred editor
-        ${EDITOR:-nano} "$TEMP_MSG"
-        echo
-        echo "Updated commit message:"
-        echo "─────────────────────────────────────────────────"
+# Only show the review menu if Gemini generated the message
+if [ "$MANUAL_ENTRY" = false ]; then
+    echo
+    echo "✓ Gemini generated the following commit message:"
+    echo "─────────────────────────────────────────────────"
+    # Check if file is empty or just whitespace
+    if [ -s "$TEMP_MSG" ]; then
         cat "$TEMP_MSG"
-        echo "─────────────────────────────────────────────────"
-        echo
-        read -r -p "Proceed with this message? [y/N]: " confirm
-        if [[ ! $confirm =~ ^[Yy]$ ]]; then
-            echo "Commit cancelled"
-            exit 0
-        fi
-        ;;
-    c|C)
-        echo "Commit cancelled"
-        exit 0
-        ;;
-    a|A)
-        echo "Proceeding with commit..."
-        ;;
-    *)
-        echo "Invalid choice. Commit cancelled"
-        exit 1
-        ;;
-esac
+    else
+        echo "[Gemini returned an empty message]"
+    fi
+    echo "─────────────────────────────────────────────────"
+    echo
+
+    # Allow user to edit the commit message with refinement loop
+    # Use 'read -r' to handle backslashes properly
+    while true; do
+        read -r -p "Do you want to (a)pprove, (e)dit, (r)efine with Gemini, or (c)ancel? [a/e/r/c]: " choice
+
+        case $choice in
+            e|E)
+                # Open the message in the user's preferred editor
+                ${EDITOR:-nano} "$TEMP_MSG"
+                echo
+                echo "Updated commit message:"
+                echo "─────────────────────────────────────────────────"
+                cat "$TEMP_MSG"
+                echo "─────────────────────────────────────────────────"
+                echo
+                ;;
+            r|R)
+                # Let user refine the message with Gemini
+                echo
+                echo "Current message:"
+                echo "─────────────────────────────────────────────────"
+                cat "$TEMP_MSG"
+                echo "─────────────────────────────────────────────────"
+                echo
+                echo "Enter your refinement instructions for Gemini:"
+                echo "(e.g., 'make it shorter', 'add more technical details', 'make it more formal')"
+                read -r -p "> " refinement_prompt
+                
+                if [ -z "$refinement_prompt" ]; then
+                    echo "No instructions provided. Skipping refinement."
+                    continue
+                fi
+                
+                CURRENT_MSG=$(cat "$TEMP_MSG")
+                echo
+                echo "Asking Gemini to refine the message..."
+                
+                # Ask Gemini to refine the commit message
+                REFINE_ERROR=$(mktemp)
+                trap "rm -f $TEMP_MSG $GEMINI_ERROR $REFINE_ERROR" EXIT
+                
+                TEMP_REFINED=$(mktemp)
+                trap "rm -f $TEMP_MSG $GEMINI_ERROR $REFINE_ERROR $TEMP_REFINED" EXIT
+                
+                if ! echo "Current commit message: $CURRENT_MSG
+
+Refinement instructions: $refinement_prompt
+
+Please provide an improved commit message based on the instructions. Follow conventional commit format. Only output the refined commit message, nothing else." | timeout 60 gemini > "$TEMP_REFINED" 2>"$REFINE_ERROR"; then
+                    REFINE_EXIT_CODE=$?
+                    echo
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "⚠️  Failed to refine message with Gemini"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo
+                    
+                    # Same detailed error handling as initial request
+                    if [ $REFINE_EXIT_CODE -eq 124 ]; then
+                        echo "⏱️  TIMEOUT: Refinement request timed out after 60 seconds"
+                        echo
+                        echo "💡 Try:"
+                        echo "   • Use a shorter refinement prompt"
+                        echo "   • Check your internet connection"
+                        echo "   • Try again in a moment"
+                        
+                    elif grep -qi "api.key\|authentication\|unauthorized\|forbidden" "$REFINE_ERROR" 2>/dev/null; then
+                        echo "🔑 API KEY ISSUE: Authentication failed"
+                        echo
+                        echo "💡 Your API key may have expired. Check:"
+                        echo "   🔗 https://aistudio.google.com/app/apikey"
+                        
+                    elif grep -qi "quota\|rate.limit\|too.many.requests" "$REFINE_ERROR" 2>/dev/null; then
+                        echo "📊 RATE LIMIT: Too many requests"
+                        echo
+                        echo "💡 Wait a few minutes before trying to refine again"
+                        
+                    elif grep -qi "network\|connection\|ENOTFOUND\|ECONNREFUSED\|timeout" "$REFINE_ERROR" 2>/dev/null; then
+                        echo "🌐 NETWORK ERROR: Can't reach Gemini"
+                        echo
+                        echo "💡 Check your internet connection"
+                        
+                    else
+                        echo "❌ UNKNOWN ERROR occurred during refinement"
+                        if [ -s "$REFINE_ERROR" ]; then
+                            echo
+                            echo "Error details:"
+                            head -3 "$REFINE_ERROR"
+                        fi
+                    fi
+                    
+                    echo
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "↩️  Keeping the previous commit message"
+                    echo
+                    # Keep the original message
+                    echo "$CURRENT_MSG" > "$TEMP_MSG"
+                else
+                    # Refinement succeeded
+                    mv "$TEMP_REFINED" "$TEMP_MSG"
+                    echo
+                    echo "✓ Gemini refined the commit message:"
+                    echo "─────────────────────────────────────────────────"
+                    cat "$TEMP_MSG"
+                    echo "─────────────────────────────────────────────────"
+                    echo
+                fi
+                
+                rm -f "$REFINE_ERROR" "$TEMP_REFINED"
+                ;;
+            c|C)
+                echo "Commit cancelled"
+                exit 0
+                ;;
+            a|A)
+                echo "Proceeding with commit..."
+                break
+                ;;
+            *)
+                echo "Invalid choice. Please choose (a)pprove, (e)dit, (r)efine, or (c)ancel."
+                ;;
+        esac
+    done
+fi
 
 # Read the commit message from the file
 COMMIT_MSG=$(cat "$TEMP_MSG")
