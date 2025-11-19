@@ -53,12 +53,11 @@ MANUAL_ENTRY=false
 
 # Prompt Gemini to generate commit message
 echo "Requesting commit message from Gemini CLI..."
-echo "Note: Gemini may ask to check the DIFF - please approve when prompted"
 echo
 
 # Ask Gemini to generate a commit message with timeout
 # We pipe the diff to Gemini as standard input, which is safer.
-if ! echo "$DIFF" | timeout 30 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG" 2>"$GEMINI_ERROR"; then
+if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG" 2>"$GEMINI_ERROR"; then
     GEMINI_EXIT_CODE=$?
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "❌ Failed to get commit message from Gemini"
