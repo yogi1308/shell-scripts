@@ -18,21 +18,79 @@ if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcela
     exit 0
 fi
 
-# Show what will be staged
-echo "Files to be staged:"
-git status --short
-echo
+# Check what's staged vs unstaged
+STAGED_FILES=$(git diff --cached --name-only)
+UNSTAGED_CHANGES=$(git diff --name-only)
+UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
 
-# Stage all changes with confirmation
-read -r -p "Stage all changes? [Y/n]: " stage_confirm
-if [[ $stage_confirm =~ ^[Nn]$ ]]; then
-    echo "Staging cancelled. You can stage files manually and run this script again."
-    exit 0
+# Show current status
+if [ -n "$STAGED_FILES" ]; then
+    echo "Already staged files:"
+    echo "$STAGED_FILES" | sed 's/^/  ✓ /'
+    echo
 fi
 
-git add .
-echo "✓ Changes staged"
+if [ -n "$UNSTAGED_CHANGES" ] || [ -n "$UNTRACKED_FILES" ]; then
+    echo "Unstaged changes:"
+    git status --short | grep -E '^ M|^ D|^\?\?' | sed 's/^/  /'
+    echo
+fi
+
+# Give user 3 options
+echo "What would you like to do?"
+echo "  1) Stage all files and commit"
+echo "  2) Commit only staged files"
+echo "  3) Cancel"
 echo
+
+read -r -p "Choose an option [1/2/3]: " staging_choice
+
+case $staging_choice in
+    1)
+        echo "Staging all changes..."
+        git add .
+        echo "✓ All changes staged"
+        echo
+        ;;
+    2)
+        if [ -z "$STAGED_FILES" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⚠️  No files are currently staged"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo
+            echo "You need to stage files before committing them."
+            echo
+            echo "💡 What you can do:"
+            echo "  1) Go back and choose option 1 to stage all files"
+            echo "  2) Manually stage specific files:"
+            echo "     → git add file1.txt file2.txt"
+            echo "     → Then run this script again"
+            echo
+            read -r -p "Would you like to stage all files now? [Y/n]: " stage_all_now
+            
+            if [[ $stage_all_now =~ ^[Nn]$ ]]; then
+                echo "Cancelled. Stage files manually and run the script again."
+                exit 0
+            fi
+            
+            echo "Staging all changes..."
+            git add .
+            echo "✓ All changes staged"
+            echo
+        else
+            echo "✓ Using already staged files"
+            echo
+        fi
+        ;;
+    3)
+        echo "Cancelled"
+        exit 0
+        ;;
+    *)
+        echo "Invalid choice. Cancelled."
+        exit 1
+        ;;
+esac
 
 # Get the diff
 echo "Getting diff for Gemini..."
