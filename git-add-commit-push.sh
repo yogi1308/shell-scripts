@@ -43,13 +43,9 @@ if [ -z "$DIFF" ]; then
     exit 0
 fi
 
-# Create temporary files
+# Create a temporary file for the commit message
 TEMP_MSG=$(mktemp)
-GEMINI_ERROR=$(mktemp)
-trap "rm -f $TEMP_MSG $GEMINI_ERROR" EXIT
-
-# Flag to track if user entered message manually
-MANUAL_ENTRY=false
+trap "rm -f $TEMP_MSG" EXIT
 
 # Prompt Gemini to generate commit message
 echo "Requesting commit message from Gemini CLI..."
@@ -57,6 +53,10 @@ echo
 
 # Ask Gemini to generate a commit message with timeout
 # We pipe the diff to Gemini as standard input, which is safer.
+# We also allow stderr to pass through for better debugging.
+GEMINI_ERROR=$(mktemp)
+trap "rm -f $TEMP_MSG $GEMINI_ERROR" EXIT
+
 if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, write a concise and descriptive commit message following conventional commit format. Only output the commit message, nothing else." > "$TEMP_MSG" 2>"$GEMINI_ERROR"; then
     GEMINI_EXIT_CODE=$?
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -85,7 +85,7 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
         DIFF_SIZE=$(echo "$DIFF" | wc -l)
         DIFF_CHARS=$(echo "$DIFF" | wc -c)
         echo "   📊 Your diff stats: $DIFF_SIZE lines, $DIFF_CHARS characters"
-        if [ "$DIFF_SIZE" -gt 500 ]; then
+        if [ $DIFF_SIZE -gt 500 ]; then
             echo "   ⚠️  Your diff is quite large (>500 lines). Consider smaller commits."
         fi
         
@@ -161,7 +161,7 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
         if [ -s "$GEMINI_ERROR" ]; then
             echo "📋 Error details from Gemini:"
             echo "   ┌─────────────────────────────────────────"
-            head -10 "$GEMINI_ERROR" | sed 's/^/   │ /'
+            cat "$GEMINI_ERROR" | head -10 | sed 's/^/   │ /'
             echo "   └─────────────────────────────────────────"
             echo
         fi
@@ -183,74 +183,68 @@ if ! echo "$DIFF" | timeout 60 gemini "Based on the git diff I'm providing, writ
     
     echo
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    # Ask if user wants to write their own commit message
+    # NEW: Ask if user wants to write their own commit message
     read -r -p "Would you like to write the commit message yourself? [Y/n]: " manual_confirm
     if [[ $manual_confirm =~ ^[Nn]$ ]]; then
         echo "Commit cancelled"
         exit 1
     fi
     
-    # Let user write their own commit message
+    # NEW: Let user write their own commit message
     echo "Enter your commit message (press Ctrl+D when done, or Ctrl+C to cancel):"
     cat > "$TEMP_MSG"
     
-    # Check if user provided a message
+    # NEW: Check if user provided a message
     if [ ! -s "$TEMP_MSG" ]; then
         echo "No commit message provided. Commit cancelled."
         exit 1
     fi
-    
-    # Set flag to skip review step since user just wrote it
-    MANUAL_ENTRY=true
 fi
 
-# Only show the review menu if Gemini generated the message
-if [ "$MANUAL_ENTRY" = false ]; then
-    echo
-    echo "✓ Gemini generated the following commit message:"
-    echo "─────────────────────────────────────────────────"
-    # Check if file is empty or just whitespace
-    if [ -s "$TEMP_MSG" ]; then
+echo
+echo "✓ Gemini generated the following commit message:"
+echo "─────────────────────────────────────────────────"
+# Check if file is empty or just whitespace
+if [ -s "$TEMP_MSG" ]; then
+    cat "$TEMP_MSG"
+else
+    echo "[Gemini returned an empty message]"
+fi
+echo "─────────────────────────────────────────────────"
+echo
+
+# Allow user to edit the commit message
+# Use 'read -r' to handle backslashes properly
+read -r -p "Do you want to (a)pprove, (e)dit, or (c)ancel? [a/e/c]: " choice
+
+case $choice in
+    e|E)
+        # Open the message in the user's preferred editor
+        ${EDITOR:-nano} "$TEMP_MSG"
+        echo
+        echo "Updated commit message:"
+        echo "─────────────────────────────────────────────────"
         cat "$TEMP_MSG"
-    else
-        echo "[Gemini returned an empty message]"
-    fi
-    echo "─────────────────────────────────────────────────"
-    echo
-
-    # Allow user to edit the commit message
-    # Use 'read -r' to handle backslashes properly
-    read -r -p "Do you want to (a)pprove, (e)dit, or (c)ancel? [a/e/c]: " choice
-
-    case $choice in
-        e|E)
-            # Open the message in the user's preferred editor
-            ${EDITOR:-nano} "$TEMP_MSG"
-            echo
-            echo "Updated commit message:"
-            echo "─────────────────────────────────────────────────"
-            cat "$TEMP_MSG"
-            echo "─────────────────────────────────────────────────"
-            echo
-            read -r -p "Proceed with this message? [y/N]: " confirm
-            if [[ ! $confirm =~ ^[Yy]$ ]]; then
-                echo "Commit cancelled"
-                exit 0
-            fi
-            ;;
-        c|C)
+        echo "─────────────────────────────────────────────────"
+        echo
+        read -r -p "Proceed with this message? [y/N]: " confirm
+        if [[ ! $confirm =~ ^[Yy]$ ]]; then
             echo "Commit cancelled"
             exit 0
-            ;;
-        a|A)
-            echo "Proceeding with commit..."
-            ;;
-        *)
-            echo "Invalid choice. Commit cancelled"
-            exit 1
-            ;;
-    esac
-fi
+        fi
+        ;;
+    c|C)
+        echo "Commit cancelled"
+        exit 0
+        ;;
+    a|A)
+        echo "Proceeding with commit..."
+        ;;
+    *)
+        echo "Invalid choice. Commit cancelled"
+        exit 1
+        ;;
+esac
 
 # Read the commit message from the file
 COMMIT_MSG=$(cat "$TEMP_MSG")
